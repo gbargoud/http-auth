@@ -1,3 +1,7 @@
+// Copyright (C) 2026 George Bargoud <george@bargoud.nyc> & Scott Lamb <slamb@slamb.org>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+
 /// The errors that can occur when parsing the response server side
 #[derive(Debug)]
 pub enum AuthError {
