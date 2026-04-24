@@ -8,6 +8,11 @@ use std::convert::TryFrom;
 
 use crate::ChallengeRef;
 
+#[cfg(feature = "server")]
+use crate::errors::AuthError;
+
+const PREFIX: &str = "Basic ";
+
 /// Encodes the given credentials.
 ///
 /// This can be used to preemptively send `Basic` authentication, without
@@ -30,7 +35,6 @@ use crate::ChallengeRef;
 pub fn encode_credentials(username: &str, password: &str) -> String {
     use base64::Engine as _;
     let user_pass = format!("{}:{}", username, password);
-    const PREFIX: &str = "Basic ";
     let mut value = String::with_capacity(PREFIX.len() + base64_encoded_len(user_pass.len()));
     value.push_str(PREFIX);
     base64::engine::general_purpose::STANDARD.encode_string(&user_pass[..], &mut value);
@@ -40,6 +44,46 @@ pub fn encode_credentials(username: &str, password: &str) -> String {
 /// Returns the base64-encoded length for the given input length, including padding.
 fn base64_encoded_len(input_len: usize) -> usize {
     (input_len + 2) / 3 * 4
+}
+
+/// Represents the username and password retrieved from Basic auth
+#[cfg(feature = "server")]
+pub struct Credentials {
+    pub username: String,
+    pub password: String,
+}
+
+#[cfg(feature = "server")]
+impl From<(&str, &str)> for Credentials {
+    fn from((username, password): (&str, &str)) -> Self {
+        Self {
+            username: username.to_string(),
+            password: password.to_string(),
+        }
+    }
+}
+
+/// Decode the credentials from the header
+///
+/// These are the credentials added to the `Authorization` or `Proxy-Authorization` header value by
+/// the client.
+///
+/// This is a reversal of `encode_credentials`.
+#[cfg(feature = "server")]
+pub fn decode_credentials(header_value: &str) -> Result<Credentials, AuthError> {
+    use base64::Engine as _;
+    let encoded = header_value
+        .strip_prefix(PREFIX)
+        .ok_or(AuthError::IncorrectScheme)?
+        .trim();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| AuthError::MalformedRequest)?;
+    let decoded = String::from_utf8(decoded).map_err(|_| AuthError::MalformedRequest)?;
+    decoded
+        .split_once(":")
+        .map(Credentials::from)
+        .ok_or(AuthError::MalformedRequest)
 }
 
 /// Client for a `Basic` challenge, as in
@@ -64,6 +108,32 @@ impl BasicClient {
     #[inline]
     pub fn respond(&self, username: &str, password: &str) -> String {
         encode_credentials(username, password)
+    }
+}
+
+// Server side implementations for BasicClient
+#[cfg(feature = "server")]
+impl BasicClient {
+    /// Creates a new client for issuing challenges and verifying responses.
+    pub fn new(realm: String) -> Self {
+        Self {
+            realm: realm.into(),
+        }
+    }
+
+    /// Issues the challenge for the given client
+    ///
+    /// This should be included by the server in the `WWW-Authenticate` header of a 401 response or
+    /// the `Proxy-Authenticate` header in a 407 response.
+    #[inline]
+    pub fn challenge(&self) -> String {
+        format!("{}realm={}", PREFIX, self.realm)
+    }
+
+    /// Parses the password
+    #[inline]
+    pub fn parse_response(&self, response: &str) -> Result<Credentials, AuthError> {
+        decode_credentials(response)
     }
 }
 
@@ -93,9 +163,10 @@ impl TryFrom<&ChallengeRef<'_>> for BasicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ChallengeParser;
 
     #[test]
-    fn basic() {
+    fn basic_respond() {
         // Example from https://datatracker.ietf.org/doc/html/rfc7617#section-2
         let ctx = BasicClient {
             realm: "WallyWorld".into(),
@@ -111,5 +182,46 @@ mod tests {
             realm: "foo".into(),
         };
         assert_eq!(ctx.respond("test", "123\u{A3}"), "Basic dGVzdDoxMjPCow==");
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn basic_round_trip() {
+        let ctx = BasicClient {
+            realm: "foo".into(),
+        };
+        let challenge = ctx.challenge();
+        let mut challenge_parser = ChallengeParser::new(challenge.as_str());
+        let challenge_ref = challenge_parser
+            .next()
+            .expect("Missing ChallengeRef")
+            .expect("Malformed ChallengeRef");
+        let client = BasicClient::try_from(&challenge_ref).expect("Challenge should be basic");
+        assert_eq!(client.realm, ctx.realm);
+
+        let response = ctx.respond("AzureDiamond", "hunter2");
+        let credentials = ctx
+            .parse_response(response.as_str())
+            .expect("Failed to parse credentials");
+        assert_eq!(credentials.username, "AzureDiamond", "username");
+        assert_eq!(credentials.password, "hunter2", "password");
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn fail_to_parse() {
+        let ctx = BasicClient {
+            realm: "foo".into(),
+        };
+
+        assert!(ctx.parse_response("Does not start with Basic").is_err());
+        assert!(ctx
+            .parse_response("Basic Invalid Base64 encoded string")
+            .is_err());
+        use base64::Engine as _;
+        let mut buf = String::new();
+        base64::engine::general_purpose::STANDARD
+            .encode_string("not username colon password", &mut buf);
+        assert!(ctx.parse_response(&buf).is_err());
     }
 }

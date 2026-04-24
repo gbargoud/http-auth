@@ -16,7 +16,10 @@ repository = "https://github.com/scottlamb/http-auth"
 rust-version = "1.70.0"
 
 [features]
-default = ["basic-scheme", "digest-scheme"]
+default = ["basic-scheme", "digest-scheme", "server"]
+
+# Enable client side or server side libraries.
+server = []
 
 # Enable code to respond to challenges of the given scheme.
 basic-scheme = ["base64"]
@@ -24,7 +27,7 @@ digest-scheme = ["digest", "hex", "md-5", "rand", "sha2"]
 
 # Enable per-byte trace! calls in parsing (causing code bloat). This is only
 # meant for testing http-auth itself.
-trace = ["log"]
+trace = ["dep:log"]
 
 [package.metadata.docs.rs]
 # https://docs.rs/about/metadata

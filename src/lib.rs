@@ -88,6 +88,9 @@ pub mod digest;
 
 mod table;
 
+#[cfg(feature = "server")]
+pub mod errors;
+
 pub use parser::ChallengeParser;
 
 #[cfg(feature = "basic-scheme")]
@@ -185,7 +188,7 @@ impl std::fmt::Debug for ParamsPrinter<'_> {
 /// ## Example
 ///
 #[cfg_attr(
-    feature = "digest",
+    feature = "digest-scheme",
     doc = r##"
 ```rust
 use http_auth::PasswordClient;
