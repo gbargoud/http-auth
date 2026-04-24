@@ -169,7 +169,6 @@ impl TryFrom<&ChallengeRef<'_>> for BasicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ChallengeParser;
 
     #[test]
     fn basic_respond() {
@@ -189,9 +188,15 @@ mod tests {
         };
         assert_eq!(ctx.respond("test", "123\u{A3}"), "Basic dGVzdDoxMjPCow==");
     }
+}
+
+#[cfg(test)]
+#[cfg(feature = "server")]
+mod server_tests {
+    use super::*;
+    use crate::ChallengeParser;
 
     #[test]
-    #[cfg(feature = "server")]
     fn basic_round_trip() {
         let server = BasicServer {
             realm: "foo".into(),
@@ -214,7 +219,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "server")]
     fn fail_to_parse() {
         let server = BasicServer {
             realm: "foo".into(),
