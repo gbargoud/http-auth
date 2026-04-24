@@ -1058,6 +1058,22 @@ mod tests {
         assert_eq!(ctxs[0].nc, 1);
     }
 
+    // See sizes with: cargo test -- --nocapture digest::tests::size
+    #[test]
+    fn size() {
+        // This type should have a niche.
+        assert_eq!(
+            dbg!(std::mem::size_of::<DigestClient>()),
+            dbg!(std::mem::size_of::<Option<DigestClient>>()),
+        )
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "server")]
+mod server_tests {
+    use super::*;
+
     #[test]
     fn round_trip_minimal_options() {
         let server = DigestServer::new(
@@ -1070,21 +1086,11 @@ mod tests {
         let challenge = server.challenge(()).expect("Challenge should succeed");
         let challenge_ref =
             crate::parse_challenges(challenge.as_str()).expect("Challenge should be parseable");
-        assert_eq!(challenge_ref.len(), 1);
+        pretty_assertions::assert_eq!(challenge_ref.len(), 1);
         let client = DigestClient::try_from(&challenge_ref[0]).expect("Challenge should be digest");
-        assert_eq!(client.opaque().expect("opaque should be present"), "opaque");
-        assert_eq!(client.nonce(), "nonce");
+        pretty_assertions::assert_eq!(client.opaque().expect("opaque should be present"), "opaque");
+        pretty_assertions::assert_eq!(client.nonce(), "nonce");
         assert!(client.qop() & Qop::Auth);
         assert!(!(client.qop & Qop::AuthInt));
-    }
-
-    // See sizes with: cargo test -- --nocapture digest::tests::size
-    #[test]
-    fn size() {
-        // This type should have a niche.
-        assert_eq!(
-            dbg!(std::mem::size_of::<DigestClient>()),
-            dbg!(std::mem::size_of::<Option<DigestClient>>()),
-        )
     }
 }
