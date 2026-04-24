@@ -27,7 +27,7 @@ digest-scheme = ["digest", "hex", "md-5", "rand", "sha2"]
 
 # Enable per-byte trace! calls in parsing (causing code bloat). This is only
 # meant for testing http-auth itself.
-trace = ["dep:log"]
+trace = ["log"]
 
 [package.metadata.docs.rs]
 # https://docs.rs/about/metadata
