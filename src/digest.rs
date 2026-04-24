@@ -599,6 +599,10 @@ impl<R> DigestServer<R> {
     }
 
     pub fn parse_response(&self, r: R, response: &str) -> Result<(), AuthError> {
+        // TODO: parse response string into parts
+        // TODO: check opaque against opaque in this client
+        // TODO: verify nonce from response and extract password info
+        // TODO: return username and something related to the password
         todo!()
     }
 }
@@ -617,6 +621,27 @@ pub trait NonceGenerator<R> {
     /// [RFC 7616: 5.4](https://datatracker.ietf.org/doc/html/rfc7616#section-5.4) for more
     /// information on those.
     fn validate(&self, _request: R, _nonce: String) -> Result<(), AuthError>;
+}
+
+#[cfg(test)]
+#[cfg(feature = "server")]
+struct TestingNonceGenerator {
+    nonce: String,
+}
+
+#[cfg(test)]
+#[cfg(feature = "server")]
+impl NonceGenerator<()> for TestingNonceGenerator {
+    fn generate(&self, _: ()) -> String {
+        self.nonce.clone()
+    }
+
+    fn validate(&self, _: (), nonce: String) -> Result<(), AuthError> {
+        match nonce {
+            _ if nonce == self.nonce => Ok(()),
+            _ => Err(AuthError::IncorrectScheme),
+        }
+    }
 }
 
 /// Helper for `DigestClient::try_from` which stashes away a `&ParamValue`.
@@ -1031,6 +1056,26 @@ mod tests {
             opaque=\"5ccc069c403ebaf9f0171e9517f40e41\"",
         );
         assert_eq!(ctxs[0].nc, 1);
+    }
+
+    #[test]
+    fn round_trip_minimal_options() {
+        let server = DigestServer::new(
+            Box::new(TestingNonceGenerator {
+                nonce: "nonce".to_string(),
+            }),
+            "opaque".to_string(),
+            &[Qop::Auth],
+        );
+        let challenge = server.challenge(()).expect("Challenge should succeed");
+        let challenge_ref =
+            crate::parse_challenges(challenge.as_str()).expect("Challenge should be parseable");
+        assert_eq!(challenge_ref.len(), 1);
+        let client = DigestClient::try_from(&challenge_ref[0]).expect("Challenge should be digest");
+        assert_eq!(client.opaque().expect("opaque should be present"), "opaque");
+        assert_eq!(client.nonce(), "nonce");
+        assert!(client.qop() & Qop::Auth);
+        assert!(!(client.qop & Qop::AuthInt));
     }
 
     // See sizes with: cargo test -- --nocapture digest::tests::size
