@@ -12,6 +12,9 @@ use crate::{
     char_classes, ChallengeRef, ParamValue, PasswordParams, C_ATTR, C_ESCAPABLE, C_QDTEXT,
 };
 
+#[cfg(feature = "server")]
+use crate::errors::AuthError;
+
 /// "Quality of protection" value.
 ///
 /// The values here can be used in a bitmask as in [`DigestClient::qop`].
@@ -489,6 +492,131 @@ impl std::fmt::Debug for DigestClient {
             .field("nc", &self.nc)
             .finish()
     }
+}
+
+#[cfg(feature = "server")]
+pub struct DigestServer<R> {
+    realm: Option<String>,
+    domains: Vec<String>,
+    nonce_generator: Box<dyn NonceGenerator<R>>,
+    opaque: String,
+    algorithm: Option<Algorithm>,
+    session: bool,
+    qop: QopSet,
+    userhash: bool,
+}
+
+#[cfg(feature = "server")]
+impl<R> DigestServer<R> {
+    /// Creates a new DigestServer with only required fields set.
+    ///
+    /// Use the with_ functions below to set optional fields if needed.
+    pub fn new(nonce_generator: Box<dyn NonceGenerator<R>>, opaque: String, qop: &[Qop]) -> Self {
+        Self {
+            realm: None,
+            domains: Vec::new(),
+            nonce_generator,
+            opaque,
+            algorithm: None,
+            session: false,
+            qop: qop
+                .iter()
+                .fold(QopSet(0), |set, qop| QopSet(set.0 | (*qop as u8))),
+            userhash: false,
+        }
+    }
+
+    pub fn with_realm(mut self, realm: &str) -> Self {
+        self.realm = Some(realm.to_owned());
+        self
+    }
+
+    pub fn with_domains(mut self, domains: &[&str]) -> Self {
+        self.domains = domains.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    pub fn with_algorithm(mut self, algorithm: Algorithm) -> Self {
+        self.algorithm = Some(algorithm);
+        self
+    }
+
+    pub fn with_sessions(mut self) -> Self {
+        self.session = true;
+        self
+    }
+
+    pub fn with_userhash(mut self) -> Self {
+        self.userhash = true;
+        self
+    }
+
+    /// Generate a challenge for digest auth.
+    ///
+    /// This takes the parameter to your nonce_generator as an argument. Failure here should not
+    /// happen unless the nonce_generator creates invalid output.
+    pub fn challenge(&self, r: R) -> Result<String, String> {
+        let mut out = "Digest ".to_string();
+        match self.realm {
+            Some(ref realm) => append_quoted_key_value(&mut out, "realm", realm)?,
+            None => {}
+        }
+        if !self.domains.is_empty() {
+            append_quoted_key_value(&mut out, "domain", self.domains.join(" ").as_str())?;
+        }
+
+        append_quoted_key_value(&mut out, "nonce", self.nonce_generator.generate(r).as_str())?;
+        append_quoted_key_value(&mut out, "opaque", self.opaque.as_str())?;
+        // TODO: figure out how to include staleness since that needs persistence across requests
+        match self.algorithm {
+            Some(ref algorithm) => {
+                append_unquoted_key_value(&mut out, "algorithm", algorithm.as_str(self.session));
+            }
+            None => {}
+        };
+        append_quoted_key_value(&mut out, "qop", self.qop_str()?.as_str())?;
+        // Skipping charset since the only allowed value is UTF-8
+        if self.userhash {
+            append_unquoted_key_value(&mut out, "userhash", "true");
+        }
+
+        Ok(out)
+    }
+
+    fn qop_str(&self) -> Result<String, String> {
+        let mut buf = Vec::<String>::new();
+        if self.qop & Qop::Auth {
+            buf.push("auth".to_string());
+        }
+        if self.qop & Qop::AuthInt {
+            buf.push("auth-int".to_string());
+        }
+        if buf.is_empty() {
+            Err("At least one qop is required".into())
+        } else {
+            Ok(buf.join(", "))
+        }
+    }
+
+    pub fn parse_response(&self, r: R, response: &str) -> Result<(), AuthError> {
+        todo!()
+    }
+}
+
+/// Generates a nonce value for a given request of type R and validates it.
+#[cfg(feature = "server")]
+pub trait NonceGenerator<R> {
+    /// Generates a new nonce value every time it is called.
+    ///
+    /// See [RFC 7616](https://datatracker.ietf.org/doc/html/rfc7616) for a sample implementation.
+    fn generate(&self, request: R) -> String;
+
+    /// Validates that the received nonce value is valid.
+    ///
+    /// This can also optionally check for session expiry or replay attacks, see
+    /// [RFC 7616: 5.4](https://datatracker.ietf.org/doc/html/rfc7616#section-5.4) for more
+    /// information on those.
+    fn validate(&self, _request: R, _nonce: String) -> Result<(), AuthError>;
 }
 
 /// Helper for `DigestClient::try_from` which stashes away a `&ParamValue`.
