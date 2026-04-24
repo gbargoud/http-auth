@@ -111,9 +111,15 @@ impl BasicClient {
     }
 }
 
-// Server side implementations for BasicClient
+/// Server side support for a `Basic` challenge, as in
+/// [RFC 7617](https://datatracker.ietf.org/doc/html/rfc7617).
 #[cfg(feature = "server")]
-impl BasicClient {
+pub struct BasicServer {
+    realm: Box<str>,
+}
+
+#[cfg(feature = "server")]
+impl BasicServer {
     /// Creates a new client for issuing challenges and verifying responses.
     pub fn new(realm: String) -> Self {
         Self {
@@ -187,20 +193,20 @@ mod tests {
     #[test]
     #[cfg(feature = "server")]
     fn basic_round_trip() {
-        let ctx = BasicClient {
+        let server = BasicServer {
             realm: "foo".into(),
         };
-        let challenge = ctx.challenge();
+        let challenge = server.challenge();
         let mut challenge_parser = ChallengeParser::new(challenge.as_str());
         let challenge_ref = challenge_parser
             .next()
             .expect("Missing ChallengeRef")
             .expect("Malformed ChallengeRef");
         let client = BasicClient::try_from(&challenge_ref).expect("Challenge should be basic");
-        assert_eq!(client.realm, ctx.realm);
+        assert_eq!(client.realm, server.realm);
 
-        let response = ctx.respond("AzureDiamond", "hunter2");
-        let credentials = ctx
+        let response = client.respond("AzureDiamond", "hunter2");
+        let credentials = server
             .parse_response(response.as_str())
             .expect("Failed to parse credentials");
         assert_eq!(credentials.username, "AzureDiamond", "username");
@@ -210,18 +216,18 @@ mod tests {
     #[test]
     #[cfg(feature = "server")]
     fn fail_to_parse() {
-        let ctx = BasicClient {
+        let server = BasicServer {
             realm: "foo".into(),
         };
 
-        assert!(ctx.parse_response("Does not start with Basic").is_err());
-        assert!(ctx
+        assert!(server.parse_response("Does not start with Basic").is_err());
+        assert!(server
             .parse_response("Basic Invalid Base64 encoded string")
             .is_err());
         use base64::Engine as _;
         let mut buf = String::new();
         base64::engine::general_purpose::STANDARD
             .encode_string("not username colon password", &mut buf);
-        assert!(ctx.parse_response(&buf).is_err());
+        assert!(server.parse_response(&buf).is_err());
     }
 }
