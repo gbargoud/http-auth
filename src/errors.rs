@@ -9,4 +9,6 @@ pub enum AuthError {
     IncorrectScheme,
     /// The request was malformed in some way
     MalformedRequest,
+    /// The password was not correct for the user.
+    IncorrectPassword,
 }
