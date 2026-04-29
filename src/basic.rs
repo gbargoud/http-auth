@@ -6,10 +6,11 @@
 
 use std::convert::TryFrom;
 
-use crate::ChallengeRef;
-
+use crate::credentials::{Credentials, User};
+use crate::digest::Algorithm;
 #[cfg(feature = "server")]
 use crate::errors::AuthError;
+use crate::ChallengeRef;
 
 const PREFIX: &str = "Basic ";
 
@@ -46,19 +47,40 @@ fn base64_encoded_len(input_len: usize) -> usize {
     (input_len + 2) / 3 * 4
 }
 
-/// Represents the username and password retrieved from Basic auth
 #[cfg(feature = "server")]
-pub struct Credentials {
-    pub username: String,
-    pub password: String,
+pub struct PlaintextCredentials {
+    username: String,
+    realm: String,
+    password: String,
 }
 
 #[cfg(feature = "server")]
-impl From<(&str, &str)> for Credentials {
-    fn from((username, password): (&str, &str)) -> Self {
-        Self {
-            username: username.to_string(),
-            password: password.to_string(),
+impl Credentials for PlaintextCredentials {
+    fn get_user(&self) -> User {
+        User::Username(self.username.clone())
+    }
+
+    fn equals_plaintext(&self, username: &str, password: &str) -> Result<(), AuthError> {
+        if self.username == username && self.password == password {
+            Ok(())
+        } else {
+            Err(AuthError::IncorrectPassword)
+        }
+    }
+
+    #[cfg(feature = "digest-scheme")]
+    fn equals_digest(&self, digested: &str, algorithm: &Algorithm) -> Result<(), AuthError> {
+        let my_digest = algorithm.h(&[
+            self.username.as_bytes(),
+            b":",
+            self.realm.as_bytes(),
+            b":",
+            self.password.as_bytes(),
+        ]);
+        if my_digest == digested {
+            Ok(())
+        } else {
+            Err(AuthError::IncorrectPassword)
         }
     }
 }
@@ -69,8 +91,14 @@ impl From<(&str, &str)> for Credentials {
 /// the client.
 ///
 /// This is a reversal of `encode_credentials`.
+///
+/// The realm is the realm that was set in the request, This is used to calculate the digest if
+/// needed but can be ignored otherwise.
 #[cfg(feature = "server")]
-pub fn decode_credentials(header_value: &str) -> Result<Credentials, AuthError> {
+pub fn decode_credentials(
+    realm: &str,
+    header_value: &str,
+) -> Result<PlaintextCredentials, AuthError> {
     use base64::Engine as _;
     let encoded = header_value
         .strip_prefix(PREFIX)
@@ -82,7 +110,11 @@ pub fn decode_credentials(header_value: &str) -> Result<Credentials, AuthError> 
     let decoded = String::from_utf8(decoded).map_err(|_| AuthError::MalformedRequest)?;
     decoded
         .split_once(":")
-        .map(Credentials::from)
+        .map(|(username, password)| PlaintextCredentials {
+            username: username.to_string(),
+            realm: realm.to_string(),
+            password: password.to_string(),
+        })
         .ok_or(AuthError::MalformedRequest)
 }
 
@@ -138,8 +170,8 @@ impl BasicServer {
 
     /// Parses the password
     #[inline]
-    pub fn parse_response(&self, response: &str) -> Result<Credentials, AuthError> {
-        decode_credentials(response)
+    pub fn parse_response(&self, response: &str) -> Result<PlaintextCredentials, AuthError> {
+        decode_credentials(self.realm.as_ref(), response)
     }
 }
 

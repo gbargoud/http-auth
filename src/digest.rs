@@ -761,7 +761,7 @@ impl Algorithm {
     }
 
     #[inline(never)]
-    fn h(&self, items: &[&[u8]]) -> String {
+    pub(crate) fn h(&self, items: &[&[u8]]) -> String {
         match self {
             Algorithm::Md5 => h(md5::Md5::new(), items),
             Algorithm::Sha256 => h(sha2::Sha256::new(), items),

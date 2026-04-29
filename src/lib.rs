@@ -90,6 +90,8 @@ mod table;
 
 #[cfg(feature = "server")]
 pub mod errors;
+#[cfg(feature = "server")]
+pub mod credentials;
 
 pub use parser::ChallengeParser;
 
