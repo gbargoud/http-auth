@@ -70,13 +70,7 @@ impl Credentials for PlaintextCredentials {
 
     #[cfg(feature = "digest-scheme")]
     fn equals_digest(&self, digested: &str, algorithm: &Algorithm) -> Result<(), AuthError> {
-        let my_digest = algorithm.h(&[
-            self.username.as_bytes(),
-            b":",
-            self.realm.as_bytes(),
-            b":",
-            self.password.as_bytes(),
-        ]);
+        let my_digest = algorithm.digest_credentials(&self.username, &self.realm, &self.password);
         if my_digest == digested {
             Ok(())
         } else {
