@@ -8,12 +8,12 @@ use std::{convert::TryFrom, fmt::Write as _, io::Write as _};
 
 use digest::Digest;
 
-use crate::{
-    char_classes, ChallengeRef, ParamValue, PasswordParams, C_ATTR, C_ESCAPABLE, C_QDTEXT,
-};
 use crate::credentials::{Credentials, User};
 #[cfg(feature = "server")]
 use crate::errors::AuthError;
+use crate::{
+    char_classes, ChallengeRef, ParamValue, PasswordParams, C_ATTR, C_ESCAPABLE, C_QDTEXT,
+};
 
 /// "Quality of protection" value.
 ///
@@ -613,7 +613,9 @@ impl Credentials for DigestCredentials {
     }
 
     fn equals_plaintext(&self, username: &str, password: &str) -> Result<(), AuthError> {
-        let digest = self.algorithm.h(&[username.as_bytes(), b":", self.realm.as_bytes(), b":", password.as_bytes()]);
+        let digest = self
+            .algorithm
+            .digest_credentials(username, &self.realm, password);
         self.equals_digest(&digest, &self.algorithm)
     }
 
