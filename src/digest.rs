@@ -11,7 +11,7 @@ use digest::Digest;
 use crate::{
     char_classes, ChallengeRef, ParamValue, PasswordParams, C_ATTR, C_ESCAPABLE, C_QDTEXT,
 };
-
+use crate::credentials::{Credentials, User};
 #[cfg(feature = "server")]
 use crate::errors::AuthError;
 
@@ -594,11 +594,33 @@ impl<R> DigestServer<R> {
         }
     }
 
-    pub fn parse_response(&self, r: R, response: &str) -> Result<(), AuthError> {
+    pub fn parse_response(&self, r: R, response: &str) -> Result<DigestCredentials, AuthError> {
         // TODO: parse response string into parts
         // TODO: check opaque against opaque in this client
-        // TODO: verify nonce from response and extract password info
-        // TODO: return username and something related to the password
+        // TODO: build DigestCredentials in a way that it can be used to verify the password
+        todo!()
+    }
+}
+
+struct DigestCredentials {
+    algorithm: Algorithm,
+    realm: String,
+}
+
+impl Credentials for DigestCredentials {
+    fn get_user(&self) -> User {
+        todo!()
+    }
+
+    fn equals_plaintext(&self, username: &str, password: &str) -> Result<(), AuthError> {
+        let digest = self.algorithm.h(&[username.as_bytes(), b":", self.realm.as_bytes(), b":", password.as_bytes()]);
+        self.equals_digest(&digest, &self.algorithm)
+    }
+
+    fn equals_digest(&self, digest: &str, algorithm: &Algorithm) -> Result<(), AuthError> {
+        if self.algorithm != *algorithm {
+            return Err(AuthError::MalformedRequest);
+        }
         todo!()
     }
 }
