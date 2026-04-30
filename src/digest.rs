@@ -266,13 +266,9 @@ impl DigestClient {
     /// that method name ever shows up in production stack traces.
     fn respond_inner(&mut self, p: &PasswordParams, cnonce: &str) -> Result<String, String> {
         let realm = self.realm();
-        let mut h_a1 = self.algorithm.h(&[
-            p.username.as_bytes(),
-            b":",
-            realm.as_bytes(),
-            b":",
-            p.password.as_bytes(),
-        ]);
+        let mut h_a1 = self
+            .algorithm
+            .digest_credentials(p.username, self.realm(), p.password);
         if self.session {
             h_a1 = self.algorithm.h(&[
                 h_a1.as_bytes(),
@@ -760,8 +756,18 @@ impl Algorithm {
         }
     }
 
+    pub fn digest_credentials(&self, username: &str, realm: &str, password: &str) -> String {
+        self.h(&[
+            username.as_bytes(),
+            b":",
+            realm.as_bytes(),
+            b":",
+            password.as_bytes(),
+        ])
+    }
+
     #[inline(never)]
-    pub(crate) fn h(&self, items: &[&[u8]]) -> String {
+    fn h(&self, items: &[&[u8]]) -> String {
         match self {
             Algorithm::Md5 => h(md5::Md5::new(), items),
             Algorithm::Sha256 => h(sha2::Sha256::new(), items),
