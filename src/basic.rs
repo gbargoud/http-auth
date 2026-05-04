@@ -12,7 +12,7 @@ use crate::digest::Algorithm;
 use crate::errors::AuthError;
 use crate::ChallengeRef;
 
-const PREFIX: &str = "Basic ";
+const SCHEME: &str = "Basic";
 
 /// Encodes the given credentials.
 ///
@@ -36,8 +36,9 @@ const PREFIX: &str = "Basic ";
 pub fn encode_credentials(username: &str, password: &str) -> String {
     use base64::Engine as _;
     let user_pass = format!("{}:{}", username, password);
-    let mut value = String::with_capacity(PREFIX.len() + base64_encoded_len(user_pass.len()));
-    value.push_str(PREFIX);
+    let mut value = String::with_capacity(SCHEME.len() + 1 + base64_encoded_len(user_pass.len()));
+    value.push_str(SCHEME);
+    value.push_str(" ");
     base64::engine::general_purpose::STANDARD.encode_string(&user_pass[..], &mut value);
     value
 }
@@ -94,12 +95,12 @@ pub fn decode_credentials(
     header_value: &str,
 ) -> Result<PlaintextCredentials, AuthError> {
     use base64::Engine as _;
-    let encoded = header_value
-        .strip_prefix(PREFIX)
-        .ok_or(AuthError::IncorrectScheme)?
-        .trim();
+    let (scheme, encoded) = header_value.split_once(" ").ok_or(AuthError::MalformedRequest)?;
+    if !scheme.trim().eq_ignore_ascii_case(SCHEME) {
+        return Err(AuthError::IncorrectScheme);
+    }
     let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
+        .decode(encoded.trim())
         .map_err(|_| AuthError::MalformedRequest)?;
     let decoded = String::from_utf8(decoded).map_err(|_| AuthError::MalformedRequest)?;
     decoded
@@ -159,7 +160,7 @@ impl BasicServer {
     /// the `Proxy-Authenticate` header in a 407 response.
     #[inline]
     pub fn challenge(&self) -> String {
-        format!("{}realm={}", PREFIX, self.realm)
+        format!("{} realm={}", SCHEME, self.realm)
     }
 
     /// Parses the password
