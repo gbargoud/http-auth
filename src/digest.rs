@@ -4,9 +4,6 @@
 //! `Digest` authentication scheme, as in
 //! [RFC 7616](https://datatracker.ietf.org/doc/html/rfc7616).
 
-use digest::Digest;
-use std::{convert::TryFrom, fmt::Write as _, io::Write as _};
-
 use crate::credentials::{Credentials, User};
 #[cfg(feature = "server")]
 use crate::errors::AuthError;
@@ -14,6 +11,9 @@ use crate::{
     char_classes, ChallengeParser, ChallengeRef, ParamValue, PasswordParams, C_ATTR, C_ESCAPABLE,
     C_QDTEXT,
 };
+use digest::Digest;
+use std::convert::TryInto;
+use std::{convert::TryFrom, fmt::Write as _, io::Write as _};
 
 /// "Quality of protection" value.
 ///
@@ -118,8 +118,12 @@ impl std::ops::BitAnd<Qop> for QopSet {
 /// *   It's actively harmful in that it prevents the server from securing their
 ///     password storage via salted password hashes. See [RFC 7616 Section
 ///     5.2](https://datatracker.ietf.org/doc/html/rfc7616#section-5.2).
-///     When your server offers `Digest` authentication, it is advertising that
-///     it stores plaintext passwords!
+///     *   Storing a digest of "${username}:${realm}:${password}" instead of
+///         plaintext means that if your passwords are compromised, attackers
+///         can only use that to access the account on servers with the same
+///         realm where the username and password are reused.
+///     *   A unique realm decreases the blast radius of that to just your
+///         server.
 /// *   It's no replacement for TLS in terms of protecting confidentiality of
 ///     the password, much less confidentiality of any other information.
 ///
@@ -297,17 +301,24 @@ impl DigestClient {
         let mut hex_nc = [0u8; 8];
         let _ = write!(&mut hex_nc[..], "{:08x}", self.nc);
 
-        let response = digest(DigestParams {
-            hashed_credentials: &hashed_credentials,
-            algorithm: &self.algorithm,
-            session: self.session,
-            nonce: self.nonce(),
-            cnonce,
-            h_a2: &h_a2,
-            qop: &qop,
-            hex_nc: &hex_nc,
-            rfc2069_compat: self.rfc2069_compat,
-        });
+        let response = if self.rfc2069_compat {
+            Rfc2069DigestParams {
+                nonce: self.nonce(),
+                h_a2: &h_a2,
+            }
+            .digest(&hashed_credentials)
+        } else {
+            Rfc2617DigestParams {
+                algorithm: &self.algorithm,
+                session: self.session,
+                nonce: self.nonce(),
+                cnonce,
+                h_a2: &h_a2,
+                qop: &qop,
+                hex_nc: &hex_nc,
+            }
+            .digest(&hashed_credentials)
+        };
 
         let mut out = String::with_capacity(256);
         out.push_str("Digest ");
@@ -474,13 +485,32 @@ impl std::fmt::Debug for DigestClient {
     }
 }
 
-/// Parameter struct for the digest function below.
+trait DigestParams {
+    fn digest(&self, hashed_credentials: &str) -> String;
+}
+
+/// Parameters for an RFC 2069 compatible digest.
 ///
-/// This makes it easier to ensure that the function is being called correctly.
-struct DigestParams<'a> {
-    /// A hash of "${username}:${realm}:${password}". This should be hashed with the same algorithm
-    /// specified for the digest challenge.
-    hashed_credentials: &'a str,
+/// This is only provided for compatibility with older servers so there is no server side
+/// implementation of this scheme.
+struct Rfc2069DigestParams<'a> {
+    nonce: &'a str,
+    h_a2: &'a str,
+}
+
+impl DigestParams for Rfc2069DigestParams<'_> {
+    fn digest(&self, hashed_credentials: &str) -> String {
+        Algorithm::Md5.h(&[
+            hashed_credentials.as_bytes(),
+            b":",
+            self.nonce.as_bytes(),
+            b":",
+            self.h_a2.as_bytes(),
+        ])
+    }
+}
+
+struct Rfc2617DigestParams<'a> {
     /// The algorithm to use to calculate the digest.
     algorithm: &'a Algorithm,
     /// Whether ot not to use the session logic
@@ -495,50 +525,41 @@ struct DigestParams<'a> {
     qop: &'a Qop,
     /// The nc value in hexaecimal form
     hex_nc: &'a [u8],
-    rfc2069_compat: bool,
 }
 
-fn digest(params: DigestParams) -> String {
-    let mut h_a1 = params.hashed_credentials.to_string();
-    if params.session {
-        h_a1 = params.algorithm.h(&[
-            h_a1.as_bytes(),
-            b":",
-            params.nonce.as_bytes(),
-            b":",
-            params.cnonce.as_bytes(),
-        ]);
-    }
+impl DigestParams for Rfc2617DigestParams<'_> {
+    fn digest(&self, hashed_credentials: &str) -> String {
+        let h_a1 = if self.session {
+            self.algorithm.h(&[
+                hashed_credentials.as_bytes(),
+                b":",
+                self.nonce.as_bytes(),
+                b":",
+                self.cnonce.as_bytes(),
+            ])
+        } else {
+            hashed_credentials.to_string()
+        };
 
-    // https://datatracker.ietf.org/doc/html/rfc2617#section-3.2.2.1
-    if params.rfc2069_compat {
-        params.algorithm.h(&[
+        self.algorithm.h(&[
             h_a1.as_bytes(),
             b":",
-            params.nonce.as_bytes(),
+            self.nonce.as_bytes(),
             b":",
-            params.h_a2.as_bytes(),
-        ])
-    } else {
-        params.algorithm.h(&[
-            h_a1.as_bytes(),
+            &self.hex_nc[..],
             b":",
-            params.nonce.as_bytes(),
+            self.cnonce.as_bytes(),
             b":",
-            &params.hex_nc[..],
+            self.qop.as_str().as_bytes(),
             b":",
-            params.cnonce.as_bytes(),
-            b":",
-            params.qop.as_str().as_bytes(),
-            b":",
-            params.h_a2.as_bytes(),
+            self.h_a2.as_bytes(),
         ])
     }
 }
 
 #[cfg(feature = "server")]
 pub struct DigestServer<R> {
-    realm: Option<String>,
+    realm: String,
     domains: Vec<String>,
     nonce_generator: Box<dyn NonceGenerator<R>>,
     opaque: String,
@@ -550,12 +571,17 @@ pub struct DigestServer<R> {
 
 #[cfg(feature = "server")]
 impl<R> DigestServer<R> {
-    /// Creates a new DigestServer with only required fields set.
+    /// Creates a new DigestServer with the required fields set.
+    ///
+    /// Realm is not a required field according to RFC2617 but if you are storing the password
+    /// hashes then a leaked password database will allow an attacker to access any site with the
+    /// same realm where the user has reused their username and password so it should be kept unique
+    /// to keep the blast radius low.
     ///
     /// Use the with_ functions below to set optional fields if needed.
-    pub fn new(nonce_generator: Box<dyn NonceGenerator<R>>, opaque: String, qop: &[Qop]) -> Self {
+    pub fn new(nonce_generator: Box<dyn NonceGenerator<R>>, realm: String, opaque: String, qop: &[Qop]) -> Self {
         Self {
-            realm: None,
+            realm,
             domains: Vec::new(),
             nonce_generator,
             opaque,
@@ -566,11 +592,6 @@ impl<R> DigestServer<R> {
                 .fold(QopSet(0), |set, qop| QopSet(set.0 | (*qop as u8))),
             userhash: false,
         }
-    }
-
-    pub fn with_realm(mut self, realm: &str) -> Self {
-        self.realm = Some(realm.to_owned());
-        self
     }
 
     pub fn with_domains(mut self, domains: &[&str]) -> Self {
@@ -597,19 +618,18 @@ impl<R> DigestServer<R> {
     ///
     /// This takes the parameter to your nonce_generator as an argument. Failure here should not
     /// happen unless the nonce_generator creates invalid output.
-    pub fn challenge(&self, r: R) -> Result<String, String> {
+    pub fn challenge(&self, r: R, stale: bool) -> Result<String, String> {
         let mut out = "Digest ".to_string();
-        match self.realm {
-            Some(ref realm) => append_quoted_key_value(&mut out, "realm", realm)?,
-            None => {}
-        }
+        append_quoted_key_value(&mut out, "realm", self.realm.as_str())?;
         if !self.domains.is_empty() {
             append_quoted_key_value(&mut out, "domain", self.domains.join(" ").as_str())?;
         }
 
         append_quoted_key_value(&mut out, "nonce", self.nonce_generator.generate(r).as_str())?;
         append_quoted_key_value(&mut out, "opaque", self.opaque.as_str())?;
-        // TODO: figure out how to include staleness since that needs persistence across requests
+        if stale {
+            append_unquoted_key_value(&mut out, "stale", "true")
+        }
         match self.algorithm {
             Some(ref algorithm) => {
                 append_unquoted_key_value(&mut out, "algorithm", algorithm.as_str(self.session));
@@ -640,7 +660,7 @@ impl<R> DigestServer<R> {
         }
     }
 
-    pub fn parse_response(&self, r: R, response: &str) -> Result<DigestCredentials, AuthError> {
+    pub fn parse_response(&self, r: R, response: &str, password_params: &PasswordParams) -> Result<DigestCredentials, AuthError> {
         // There should only be one entry in the response. Using the challenge parser to read it but
         // in the future we should consider pulling out the part that builds a single challenge ref
         // and use that directly.
@@ -658,12 +678,13 @@ impl<R> DigestServer<R> {
         let mut realm = None;
         let mut uri = None;
         let mut nonce = None;
-        let mut nc: u32 = 0;
+        let mut hex_nc = [0u8; 8];
         let mut cnonce = None;
         let mut qop = Qop::Auth;
         let mut response = None;
         let mut opaque = None;
-        let mut algorithm_and_session = (Algorithm::Md5, false);
+        let mut algorithm = Algorithm::Md5;
+        let mut session = false;
 
         for (k, v) in &parsed.params {
             if store_param(k, v, "username", &mut username, &mut buf_len)
@@ -685,32 +706,56 @@ impl<R> DigestServer<R> {
             } else if k.eq_ignore_ascii_case("userhash") {
                 userhash = v.escaped.eq_ignore_ascii_case("true");
             } else if k.eq_ignore_ascii_case("algorithm") {
-                algorithm_and_session =
+                (algorithm, session) =
                     Algorithm::parse(v.escaped).map_err(|_| AuthError::MalformedRequest)?;
             } else if k.eq_ignore_ascii_case("nc") {
-                let hex_nc = v.escaped;
-                nc = u32::from_str_radix(hex_nc.as_ref(), 16)
-                    .map_err(|_| AuthError::MalformedRequest)?;
+                let hex_nc_str = v.escaped;
+                if hex_nc_str.len() != 8 {
+                    return Err(AuthError::MalformedRequest);
+                }
+                for (i, c) in hex_nc_str.chars().enumerate() {
+                    let digit = c.to_digit(16).ok_or(AuthError::MalformedRequest)? as u8;
+                    hex_nc[i] = digit;
+                }
             } else if k.eq_ignore_ascii_case("qop") && v.escaped.eq_ignore_ascii_case("auth-int") {
                 qop = Qop::AuthInt;
             }
         }
+        let username = username.ok_or(AuthError::MalformedRequest)?.to_unescaped();
+        let user = if userhash {
+            User::UserHash(username, algorithm.clone())
+        } else {
+            User::Username(username)
+        };
 
         let opaque = opaque.ok_or(AuthError::MalformedRequest)?.to_unescaped();
         if self.opaque != opaque {
             return Err(AuthError::MalformedRequest);
         }
         let nonce = nonce.ok_or(AuthError::MalformedRequest)?.to_unescaped();
+        self.nonce_generator.validate(r, &nonce)?;
+
         let cnonce = cnonce.ok_or(AuthError::MalformedRequest)?.to_unescaped();
         let response = response.ok_or(AuthError::MalformedRequest)?.to_unescaped();
 
-        // TODO: check opaque against opaque in this client
-        // TODO: build DigestCredentials in a way that it can be used to verify the password
-        todo!()
+        let h_a2 = qop.h_a2(&algorithm, password_params);
+        Ok(DigestCredentials{
+            user,
+            algorithm,
+            realm: self.realm.clone(),
+            response_digest: response,
+            session,
+            nonce,
+            cnonce,
+            hex_nc,
+            qop,
+            h_a2,
+        })
     }
 }
 
 pub struct DigestCredentials {
+    user: User,
     algorithm: Algorithm,
     realm: String,
     response_digest: String,
@@ -725,7 +770,7 @@ pub struct DigestCredentials {
 
 impl Credentials for DigestCredentials {
     fn get_user(&self) -> User {
-        todo!()
+        self.user.clone()
     }
 
     fn equals_plaintext(&self, username: &str, password: &str) -> Result<(), AuthError> {
@@ -743,17 +788,16 @@ impl Credentials for DigestCredentials {
         if self.algorithm != *algorithm {
             return Err(AuthError::MalformedRequest);
         }
-        let calculated_digest = digest(DigestParams {
-            hashed_credentials,
-            algorithm,
+        let calculated_digest = Rfc2617DigestParams {
+            algorithm: &self.algorithm,
             session: self.session,
             nonce: self.nonce.as_str(),
             cnonce: self.cnonce.as_str(),
             qop: &self.qop,
             h_a2: self.h_a2.as_str(),
             hex_nc: &self.hex_nc,
-            rfc2069_compat: false,
-        });
+        }
+        .digest(hashed_credentials);
 
         if (calculated_digest == self.response_digest) {
             Ok(())
@@ -776,7 +820,7 @@ pub trait NonceGenerator<R> {
     /// This can also optionally check for session expiry or replay attacks, see
     /// [RFC 7616: 5.4](https://datatracker.ietf.org/doc/html/rfc7616#section-5.4) for more
     /// information on those.
-    fn validate(&self, _request: R, _nonce: String) -> Result<(), AuthError>;
+    fn validate(&self, request: R, nonce: &str) -> Result<(), AuthError>;
 }
 
 /// Helper for `DigestClient::try_from` which stashes away a `&ParamValue`.
@@ -1228,7 +1272,7 @@ mod server_tests {
             self.nonce.clone()
         }
 
-        fn validate(&self, _: (), nonce: String) -> Result<(), AuthError> {
+        fn validate(&self, _: (), nonce: &str) -> Result<(), AuthError> {
             match nonce {
                 _ if nonce == self.nonce => Ok(()),
                 _ => Err(AuthError::IncorrectScheme),
@@ -1242,10 +1286,11 @@ mod server_tests {
             Box::new(TestingNonceGenerator {
                 nonce: "nonce".to_string(),
             }),
+            "unique_realm".to_string(),
             "opaque".to_string(),
             &[Qop::Auth],
         );
-        let challenge = server.challenge(()).expect("Challenge should succeed");
+        let challenge = server.challenge((), false).expect("Challenge should succeed");
         let challenge_ref =
             crate::parse_challenges(challenge.as_str()).expect("Challenge should be parseable");
         pretty_assertions::assert_eq!(challenge_ref.len(), 1);

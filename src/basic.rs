@@ -55,6 +55,12 @@ pub struct PlaintextCredentials {
     password: String,
 }
 
+impl PlaintextCredentials {
+    pub fn get_password(&self) -> &str {
+        &self.password
+    }
+}
+
 #[cfg(feature = "server")]
 impl Credentials for PlaintextCredentials {
     fn get_user(&self) -> User {

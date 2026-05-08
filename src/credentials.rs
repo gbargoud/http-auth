@@ -7,6 +7,7 @@ use crate::errors::AuthError;
 /// The user that a given set of Credentials are for.
 ///
 /// For digest auth, this may be hashed.
+#[derive(Clone)]
 pub enum User {
     Username(String),
     #[cfg(feature = "digest-scheme")]
@@ -19,6 +20,11 @@ pub trait Credentials {
     fn get_user(&self) -> User;
 
     /// Whether these credentials match the given plaintext username and password
+    /// 
+    /// This is required for implementations that store passwords in plaintext but doing so is
+    /// highly discouraged so the method is marked as deprecated so your IDEs and compilers yell at
+    /// you.
+    #[deprecated]
     fn equals_plaintext(&self, username: &str, password: &str) -> Result<(), AuthError>;
 
     /// Whether these credentials match the given digest which was made with the given algorithm.
