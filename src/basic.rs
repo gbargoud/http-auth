@@ -6,7 +6,9 @@
 
 use std::convert::TryFrom;
 
+#[cfg(feature = "server")]
 use crate::credentials::{Credentials, User};
+#[cfg(feature = "server")]
 use crate::digest::Algorithm;
 #[cfg(feature = "server")]
 use crate::errors::AuthError;
@@ -55,6 +57,7 @@ pub struct PlaintextCredentials {
     password: String,
 }
 
+#[cfg(feature = "server")]
 impl PlaintextCredentials {
     pub fn get_password(&self) -> &str {
         &self.password

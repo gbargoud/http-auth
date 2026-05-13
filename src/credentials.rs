@@ -7,7 +7,7 @@ use crate::errors::AuthError;
 /// The user that a given set of Credentials are for.
 ///
 /// For digest auth, this may be hashed.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum User {
     Username(String),
     #[cfg(feature = "digest-scheme")]

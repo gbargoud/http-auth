@@ -4,15 +4,17 @@
 //! `Digest` authentication scheme, as in
 //! [RFC 7616](https://datatracker.ietf.org/doc/html/rfc7616).
 
+#[cfg(feature = "server")]
 use crate::credentials::{Credentials, User};
 #[cfg(feature = "server")]
 use crate::errors::AuthError;
+#[cfg(feature = "server")]
+use crate::ChallengeParser;
 use crate::{
-    char_classes, ChallengeParser, ChallengeRef, ParamValue, PasswordParams, C_ATTR, C_ESCAPABLE,
+    char_classes, ChallengeRef, ParamValue, PasswordParams, C_ATTR, C_ESCAPABLE,
     C_QDTEXT,
 };
 use digest::Digest;
-use std::convert::TryInto;
 use std::{convert::TryFrom, fmt::Write as _, io::Write as _};
 
 /// "Quality of protection" value.
@@ -299,7 +301,7 @@ impl DigestClient {
 
         let nc = self.nc.checked_add(1).ok_or("nonce count exhausted")?;
         let mut hex_nc = [0u8; 8];
-        let _ = write!(&mut hex_nc[..], "{:08x}", self.nc);
+        let _ = write!(&mut hex_nc[..], "{:08x}", nc);
 
         let response = if self.rfc2069_compat {
             Rfc2069DigestParams {
@@ -493,6 +495,7 @@ trait DigestParams {
 ///
 /// This is only provided for compatibility with older servers so there is no server side
 /// implementation of this scheme.
+#[derive(Debug)]
 struct Rfc2069DigestParams<'a> {
     nonce: &'a str,
     h_a2: &'a str,
@@ -510,6 +513,7 @@ impl DigestParams for Rfc2069DigestParams<'_> {
     }
 }
 
+#[derive(Debug)]
 struct Rfc2617DigestParams<'a> {
     /// The algorithm to use to calculate the digest.
     algorithm: &'a Algorithm,
@@ -641,6 +645,7 @@ impl<R> DigestServer<R> {
         if self.userhash {
             append_unquoted_key_value(&mut out, "userhash", "true");
         }
+        out.truncate(out.len() - 2); // remove final ", "
 
         Ok(out)
     }
@@ -714,8 +719,7 @@ impl<R> DigestServer<R> {
                     return Err(AuthError::MalformedRequest);
                 }
                 for (i, c) in hex_nc_str.chars().enumerate() {
-                    let digit = c.to_digit(16).ok_or(AuthError::MalformedRequest)? as u8;
-                    hex_nc[i] = digit;
+                    hex_nc[i] = c as u8;
                 }
             } else if k.eq_ignore_ascii_case("qop") && v.escaped.eq_ignore_ascii_case("auth-int") {
                 qop = Qop::AuthInt;
@@ -754,6 +758,7 @@ impl<R> DigestServer<R> {
     }
 }
 
+#[cfg(feature = "server")]
 pub struct DigestCredentials {
     user: User,
     algorithm: Algorithm,
@@ -768,6 +773,7 @@ pub struct DigestCredentials {
     h_a2: String,
 }
 
+#[cfg(feature = "server")]
 impl Credentials for DigestCredentials {
     fn get_user(&self) -> User {
         self.user.clone()
@@ -799,7 +805,7 @@ impl Credentials for DigestCredentials {
         }
         .digest(hashed_credentials);
 
-        if (calculated_digest == self.response_digest) {
+        if calculated_digest == self.response_digest {
             Ok(())
         } else {
             Err(AuthError::IncorrectPassword)
@@ -1258,8 +1264,8 @@ mod tests {
     }
 }
 
-#[cfg(test)]
 #[cfg(feature = "server")]
+#[cfg(test)]
 mod server_tests {
     use super::*;
 
@@ -1291,13 +1297,29 @@ mod server_tests {
             &[Qop::Auth],
         );
         let challenge = server.challenge((), false).expect("Challenge should succeed");
+        dbg!(&challenge);
         let challenge_ref =
-            crate::parse_challenges(challenge.as_str()).expect("Challenge should be parseable");
-        pretty_assertions::assert_eq!(challenge_ref.len(), 1);
-        let client = DigestClient::try_from(&challenge_ref[0]).expect("Challenge should be digest");
-        pretty_assertions::assert_eq!(client.opaque().expect("opaque should be present"), "opaque");
-        pretty_assertions::assert_eq!(client.nonce(), "nonce");
-        assert!(client.qop() & Qop::Auth);
-        assert!(!(client.qop & Qop::AuthInt));
+            crate::parse_challenges(&challenge).expect("Challenge should be parseable");
+        assert_eq!(challenge_ref.len(), 1);
+        let mut client = DigestClient::try_from(&challenge_ref[0]).expect("Challenge should be digest");
+        let client_p = PasswordParams {
+            username: "AzureDiamond",
+            password: "hunter2",
+            uri: "/dir/1",
+            method: "get",
+            body: None,
+        };
+        let response = client.respond(&client_p).expect("Response should succeed");
+        dbg!(&response);
+        // Server side password params don't use the username and password.
+        // TODO: maybe split this up between username and password and the rest of the params
+        let server_p = PasswordParams {
+            username: "",
+            password: "",
+            ..client_p
+        };
+        let creds = server.parse_response((), &response, &server_p).expect("Response should succeed parsing");
+        assert_eq!(creds.get_user(), User::Username("AzureDiamond".to_string()));
+        creds.equals_plaintext("AzureDiamond", "hunter2").expect("credentials should match");
     }
 }
